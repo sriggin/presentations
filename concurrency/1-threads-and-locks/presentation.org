@@ -2,38 +2,126 @@
 #+STARTUP: showall
 
 * Threads, Blocking, and Locks
-
   Basic concurrency building blocks that everything uses, somehow.
 
 ** Threads
-
    Basic units of executing code.
 
 *** What is a Thread?
-
     A =Thread= is a thread of execution. It has its own stack, context, and position in a program.
 
+    #+BEGIN_SRC scala
+      var continue = true
+      new Thread(() => {
+        println("Thread started")
+        while(continue) { Thread.sleep(10) }
+        print("Thread done")
+      }).start()
+      println("Started")
+    #+END_SRC
+
 *** What does a thread cost?
+    - Default for 64-bit JVM is 1MB. 
+    - Can be set with =-XssNNN= JVM argument
 
 *** How to make a thread
+    #+BEGIN_SRC scala
+      // Extend it! -- Don't do this
+      new Thread {
+        override def run(): Unit = {
+          // implementation goes here
+        }
+      }
 
-*** How to interact with a thread
+      // Give it a java.lang.Runnable -- Do this
+      val task = new Runnable {
+        override def run(): Unit = {
+          // implementation goes here
+        }
+      }
+      new Thread(task)
 
+      // And with Java 8 goodness
+      new Thread(() => {
+        // implementation goes here
+      })
+    #+END_SRC
+
+    None of these examples are started/running, but they're ready
+ 
 *** Java Specifics
+    - ~Daemon threads~
+    - ~Uncaught exception handling~
     
 ** Blocking
+   Blocking is the art of preventing forward progress in a program.
 
 *** What is blocking?
+    Blocking is an umbrella for thread states that aren't ~Runnable~, meaning that there exists some condition preventing forward progress. 3 such states:
+    - Waiting
+    - Timed Waiting
+    - Blocking (special condition, because the JVM is special)
 
 *** What does blocking cost?
+    - Interaction with synchronization primitives
+    - Context switches
+
+    #+BEGIN_SRC scala
+      import java.time.Duration
+      type Task = () => Unit
+      implicit def TaskToRunnable(t: Task): Runnable = new Runnable {
+        override def run(): Unit = t()
+      }
+
+      val fast: Task = () => { var i = 0;
+        while(i < 1000000) {
+          i += 1
+        }
+      }
+
+      val cooperative: Task = () => { var i = 0;
+        while(i < 1000000) {
+          i += 1
+          Thread.`yield`()
+        }
+      }
+
+      val mon = new Object
+      val synced: Task = () => { var i = 0;
+        while(i < 1000000) {
+          mon.synchronized {
+            i += 1
+          }
+        }
+      }
+
+      def timed(work: => Unit): Duration = {
+        val start = System.nanoTime
+        work
+        val diff = System.nanoTime - start
+        Duration.ofNanos(diff)
+      }
+
+      def syncs(count: Int): Unit = {
+        val threads = 1 to count map { _ => new Thread(synced.apply _) }
+        threads.foreach { _.start() }
+        threads.foreach { _.join() }
+      }
+
+      // with some lock contention
+      1 to 10 map { c => timed(syncs(c)) }
+    #+END_SRC
 
 *** How to block
+    - ~foo.synchronized { foo.wait() }~
+    - Things in ~java.util.concurrent.locks.LockSupport~
+    - Locks available in ~java.util.concurrent.Locks~
 
 *** How to interact with blocked things
 
 *** "All code is blocking" -Dave
 
-   False.
+    False.
 
 ** Locks
 
