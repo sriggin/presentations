@@ -118,17 +118,65 @@
     - Locks available in ~java.util.concurrent.Locks~
 
 *** How to interact with blocked things
+    - ~Thread.getState~
+    - ~foo.synchronized { foo.notify() | foo.notifyAll() }~
 
 *** "All code is blocking" -Dave
 
     False.
 
+    Threads make progress or they don't. Progress is good. Being blocked isn't.
+
 ** Locks
+   Higher-level abstractions built on synchronization primitives and platform-support
 
 *** What is a lock?
+    A lock provides synchronized access control to /something/
+
+    #+BEGIN_SRC scala :results silent
+      // lifted directly from javadoc of Lock
+      import java.util.concurrent.locks.ReentrantLock
+      val l = new ReentrantLock()
+      l.lock() //blocks until it locks
+      try {
+        // access resource protected by this lock
+      } finally {
+        l.unlock()
+      }
+    #+END_SRC
 
 *** What costs are involved?
-
+    Interaction with synchronization primitives and some method calls.
+    
 *** How to make a lock
+    Use synchronization primitives or built-in locking in ~java.util.concurrent.locks~
+
+    #+BEGIN_SRC scala :results silent
+      import java.util.concurrent.locks.ReentrantLock
+
+      class Locked[T](initialValue: T) {
+        private[this] val lock = new ReentrantLock()
+
+        private[this] var value: T = initialValue
+
+        def read(): T = {
+          lock.lock()
+          try { value } finally { lock.unlock() }
+        }
+
+        def update(modifier: T => T): Unit = {
+          lock.lock()
+          try {
+            value = modifier(value)     
+          } finally lock.unlock()
+        }
+      }
+    #+END_SRC
 
 *** How to interact with a lock
+    
+
+*** Alternatives
+    - Compare-and-Swap (CAS)
+    - ~java.util.concurrent.atomic._~
+    - Sequential access keyword: ~volatile~
