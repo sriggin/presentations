@@ -1,6 +1,7 @@
 
 * Threads, Blocking, and Locks
-  Basic concurrency building blocks that everything uses, somehow.
+  Basic concurrency building blocks that 
+  everything uses, somehow.
 
   #+BEGIN_SRC scala :results silent
     import java.time.Duration
@@ -17,7 +18,8 @@
    Basic units of executing code.
 
 *** What is a Thread?
-    A =Thread= is a thread of execution. It has its own stack, context, and position in a program.
+    A =Thread= is a thread of execution. It has its 
+    own stack, context, and position in a program.
 
     #+BEGIN_SRC scala :results silent
       var continue = true
@@ -30,7 +32,8 @@
     #+END_SRC
 
 *** What does a thread cost?
-    - Default for 64-bit JVM is 1MB.
+    - A stack
+      - Default for 64-bit JVM is 1MB.
       - Can be set with =-XssNNN= JVM argument
     - The time it takes to build one
       #+BEGIN_SRC scala :results silent
@@ -69,13 +72,15 @@
       })
     #+END_SRC
 
-    None of these examples are started/running, but they're ready
+    None of these examples are started/running, 
+    but they're ready
 
 *** Risks
     - Deadlocks and Livelocks
       #+BEGIN_SRC scala DON'T RUN ME
+        import java.util.concurrent.atomic.AtomicBoolean
         val m1, m2 = new Object
-        val shouldStart = new java.util.concurrent.atomic.AtomicBoolean(false)
+        val shouldStart = new AtomicBoolean(false)
 
         val t1 = new Thread(() => {
           while(!shouldStart.get) {}
@@ -109,7 +114,7 @@
       #+begin_example
         m1: Object = java.lang.Object@31c0a875
         m2: Object = java.lang.Object@5675fcc5
-        shouldStart: java.util.concurrent.atomic.AtomicBoolean = false
+        shouldStart: j.u.c.atomic.AtomicBoolean = false
         t1: Thread = Thread[Thread-2075,5,main]
         t2: Thread = Thread[Thread-2076,5,main]
         res208: java.lang.Thread.State = *BLOCKED*
@@ -119,53 +124,63 @@
     - Race conditions
       #+BEGIN_SRC scala :results silent
         var counter = 0
+        val mon = new Object
 
         val threads = 1 to 5 map { _ =>
           val t = new Thread(() => {
             var i = 0
             while(i < 10000) {
               i += 1
-              counter = counter + 1
+              mon.synchronized { counter += 1 }
             }
           })
           t.start()
           t
         }
-        threads foreach { _.join() }
-
-        println(s"Counter should be 50000, but is " + counter)
+        timed {
+          threads foreach { _.join() }
+        }
+        println("Counter should be 50000")
+        println(s"Actual value is " + counter)
       #+END_SRC
 
 *** Java Specifics
-    - Interacting with threads
-      + interrupt() - Throws an ~InterruptedException~ within the Thread
-      + join() - Blocks until the Thread dies
-    - Daemon threads (~thread.setDaemon(true)~)
-    - Uncaught exception handling
-      #+BEGIN_SRC scala :results silent
-        val t1, t2 = new Thread(() => {
-          throw new Exception("Someone should do something about this")
-        })
-        t1.start()
-        t1.join()
-        println("What happened?\n\n")
+    1. Interacting with threads
+       + interrupt() - 
+         Throws an ~InterruptedException~ within the Thread
+       + join() - Blocks until the Thread dies
+    2. Daemon threads (~thread.setDaemon(true)~)
+    3. Uncaught exception handling
+       #+BEGIN_SRC scala :results silent
+         val t1, t2 = new Thread(() => {
+           throw new Exception("Please deal with this")
+         })
+         t1.start()
+         t1.join()
+         println("What happened?\n\n")
 
-        t2.setUncaughtExceptionHandler { (thread, cause) =>
-          println("EXCEPTION HAPPENED! DO SOMETHING! " + cause.getMessage)
-        }
-        t2.start()
-        t2.join()
-      #+END_SRC
+         t2.setUncaughtExceptionHandler { 
+           (thread, cause) =>
+             println("Do something for " +
+               cause.getMessage)
+         }
+         t2.start()
+         t2.join()
+       #+END_SRC
 
 ** Blocking
-   Blocking is the art of preventing forward progress in a thread (or a program).
 
 *** What is blocking?
-    Blocking is an umbrella for thread states that aren't ~Runnable~, meaning
-    that there exists some condition preventing forward progress.
+    Blocking is the art of preventing forward progress
+    in a thread (or a program).
+
+    Blocking is an umbrella for thread states that 
+    aren't ~Runnable~, meaning that there exists some
+    condition preventing forward progress.
     - Waiting
     - Timed Waiting
-    - Blocking (special condition, because the JVM is special)
+    - Blocking (special condition, because the JVM is 
+      special)
 
     Places you'll generally see blocking
     - Locking/synchronization
@@ -176,12 +191,8 @@
     - Context switches
 
     #+BEGIN_SRC scala :results silent
-      import scala.language.implicitConversions
       import java.time.Duration
       type Task = () => Unit
-      /*implicit def TaskToRunnable(t: Task): Runnable = new Runnable {
-        override def run(): Unit = t()
-      }*/
 
       val fast: Runnable = () => { var i = 0;
         while(i < 1000000) {
@@ -199,13 +210,15 @@
       }
 
       def syncs(count: Int): Unit = {
-        val threads = 1 to count map { _ => new Thread(synced) }
+        val threads = 1 to count map { _ => 
+          new Thread(synced) 
+        }
         threads.foreach { _.start() }
         threads.foreach { _.join() }
       }
 
       // with some lock contention
-      1 to 10 map { c => timed(syncs(c)) }
+      1 to 10 map { c => timed(syncs(c)) } foreach println
     #+END_SRC
 
 *** How to block
@@ -214,8 +227,8 @@
     - Locks and such in ~java.util.concurrent.locks~
 
 *** How to interact with blocked things
-    - ~Thread.getState~
-    - ~foo.synchronized { foo.notify() | foo.notifyAll() }~
+    + ~someThread.getState~
+    + ~foo.synchronized { foo.notify() | foo.notifyAll() }~
 
 *** Common Misconceptions
     #+BEGIN_QUOTE Out of context
@@ -227,17 +240,21 @@
 
     False.
 
-    Threads make progress or they don't. Progress is good. Being blocked isn't necessarily good.
+    Threads make progress or they don't. 
+    Progress is good. 
+    Being blocked isn't necessarily good.
 
 ** Locks
 
 *** What is a lock?
-    Higher-level abstractions built on synchronization primitives and underlying platform support
+    Higher-level abstractions built on synchronization
+    primitives and underlying platform support
 
-    A lock provides synchronized access control to /something/
+    A lock provides synchronized access control 
+    to /something/
 
     #+BEGIN_SRC scala :results silent
-      // lifted directly from javadoc of Lock
+      // lifted almost directly from javadoc of Lock
       import java.util.concurrent.locks.ReentrantLock
       val l = new ReentrantLock()
       l.lock() //blocks until it locks
