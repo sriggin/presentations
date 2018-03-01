@@ -1,0 +1,216 @@
+
+* Thread pools and Execution Contexts
+
+** Thread pools
+  What are they? Pools of Threads
+
+  Why have thread pools?
+   - Threads are expensive to create (1MB stack default)
+   - Too many active threads can reduce performance 
+     (context switching)
+   - Higher-level abstraction for executing multiple 
+     tasks asynchronously
+
+*** Types
+    Package: ~java.util.concurrent~
+    - ~Executor~
+      - ~ExecutorService~
+        + ~AbstractExecutorService~
+        + ~ForkJoinPool~
+        + ~ThreadPoolExecutor~
+        - ~ScheduledExecutorService~
+          + ~ScheduledThreadPoolExecutor~
+
+**** Executor
+     Minimal interface for executing tasks that have 
+     only side effects.
+     
+     #+BEGIN_SRC scala
+       trait Runnable { // remember last talk?
+         def run(): Unit
+       }
+
+       trait Executor {
+         def execute(command: Runnable): Unit
+       }
+     #+END_SRC
+
+**** ExecutorService
+     Higher-level interface with more useful methods
+     * It extends Executor
+     * Lifecycle
+       * ~shutdown()~ / ~shutdownNow()~
+       * ~isShutdown()~ / ~isTerminated()~
+         / ~awaitTermination(timeout)~
+     * Work submission with results
+       * ~submit(task: Runnable, result: T = null): 
+         Future[T]~
+       * ~submit(task: Callable[T]): Future[T]~
+     * Multiple task submission
+       * ~invokeAny~ / ~invokeAll~     
+
+**** ScheduledExecutorService
+     ExecutorService with scheduling methods
+     * Work submission with delay
+       * ~schedule(task: Runnable, delay): 
+           ScheduledFuture[_]~
+       * ~schedule(callable[T], delay): 
+           ScheduledFuture[T]~
+     * Recurring work submission
+       * ~scheduleAtFixedRate~
+       * ~scheduleAtFixedDelay~ 
+
+*** Simple Examples of Thread Pools
+
+**** Single-thread Thread-pool Executor
+     A simple example which schedules all tasks in a 
+     thread-safe, bounded queue, executed by a 
+     single thread.
+
+     #+BEGIN_SRC scala :results silent
+       import java.util.concurrent.ArrayBlockingQueue
+       import java.util.concurrent.Executor
+
+       class SingleThreadExecutor(taskCapacity: Int) extends Executor {
+         // ArrayBlockingQueue is thread-safe
+         private val tasks = 
+           new ArrayBlockingQueue[Runnable](taskCapacity)
+
+         // this is the thread "pool"
+         private val thread = new Thread(() => {
+           while(true) {
+             // an exception from a task could cause "fun"
+             tasks.take.run()
+           }
+         })
+         // all threads in the pool have to be started
+         thread.start()
+
+         override def execute(command: Runnable): Unit = {
+           /* Because threadpools work with job queues, we
+            need some back-pressure the Executor interface
+            doesn't give us many options. */
+           require(tasks.offer(command), 
+             "Task queue is full")
+         }
+       }
+     #+END_SRC
+
+**** Same-thread "Thread-pool" Executor
+     A simple example which executes all tasks immediately
+     on the calling thread.
+
+     #+BEGIN_SRC scala :results silent
+       import java.util.concurrent.Executor
+
+       class SameThreadExecutor extends Executor {
+         override def execute(command: Runnable): Unit = {
+           command.run()
+         }
+       }
+     #+END_SRC
+
+*** How to make Thread pools
+    - Factory methods on java.util.concurrent.Executors
+      - ~newCachedThreadPool~
+      - ~newFixedThreadPool~
+      - ~newSingleThreadExecutor~
+      - ~newScheduledThreadPool~
+      - Other, more "advanced" options
+    - Make your own with ~AbstractExecutorService~
+      - You're on the hook for implementing scheduling 
+        and lifecycle methods
+      - Don't bother without a *very* good reason 
+        and sufficient evidence to justify it
+
+*** Usage
+    Remember, these are Java types, so avoid them if you 
+    can. 
+
+    In Scala, you can build an ~ExecutionContext~ from an
+    ~Executor~ and use higher-level ~Future~ / ~Promise~
+
+    #+BEGIN_SRC scala :results silent
+      import java.util.concurrent._
+
+      val x = new atomic.AtomicInteger(0)
+
+      //pool of 1 threads, <= available cores
+      val pool = Executors.newFixedThreadPool(1)
+
+      val task: Runnable = () => x.incrementAndGet
+      var i = 0
+      while (i < 1000000) {
+        i += 1
+        // submits a task to the pool
+        pool.execute(task)
+      }
+
+      pool.shutdown()
+      pool.awaitTermination(10, TimeUnit.SECONDS)
+      println("Done! x = " + x.get)
+    #+END_SRC
+
+** Execution contexts
+   ~ExecutionContext~ is the trait in Scala, used by the
+   ~scala.concurrent~ library, which looks awfully 
+   similar to an ~Executor~.
+
+   #+BEGIN_SRC scala
+     trait ExecutionContext {
+       def execute(runnable: Runnable): Unit
+
+       def reportFailure(cause: Throwable): Unit
+     }
+   #+END_SRC
+
+*** How to get/make one
+    - ~scala.concurrent.ExecutionContext.Implicits.Global~
+      - In 2.12, this defaults to a work-stealing thread
+        pool (preconfigured ~ForkJoinPool~)
+        - Size is configurable with System Properties
+        - Default size is 1 thread per core
+    - Factory methods on ~ExecutionContext~ object:
+      - ~fromExecutor(e: Executor, 
+          reporter: Throwable => Unit = defaultReporter)~
+      - ~fromExecutorService(e: Executor, 
+          reporter: Throwable => Unit = defaultReporter)~
+      - Default reporting of exceptions goes 
+        to ~System.err~
+
+** Effective use of thread pools
+   - More threads is not necessarily faster (duh)
+
+     #+BEGIN_SRC scala :results silent
+       import java.util.concurrent._
+       import java.time._
+
+       def now = System.nanoTime
+
+       val task: Runnable = () => {
+         val start = now
+         // loop for ~100us
+         while(100000 > now - start) {}
+       }
+
+       (1 to 32).map { count: Int =>
+         Executors.newFixedThreadPool(count)
+       }.map { pool =>
+         System.gc() // or else this happens in the middle
+
+         val start = now
+         1 to 1000 foreach { _ =>
+           pool.execute(task)
+         }
+         pool.shutdown()
+         pool.awaitTermination(10, TimeUnit.SECONDS)
+        
+         Duration.ofNanos(now - start)
+       }.zipWithIndex.foreach { case (duration, idx) =>
+         val millis = duration.toNanos / 1000000
+         println(s"${idx+1}\t${duration.toNanos}")
+       }
+     #+END_SRC
+
+   - Trading latency and fairness with throughput
+   - Handle blocking and non-blocking code differently
