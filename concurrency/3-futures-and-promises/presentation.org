@@ -1,0 +1,403 @@
+
+* Futures and Promises
+
+** Java Futures
+
+*** Types
+    In package ~java.util.concurrent~
+    + ~Future~ - Basic interface for checking/awaiting/retrieving 
+                 an async result
+      + ~ForkJoinTask~
+      + ~RunnableFuture~ - Future + Runnable interface
+        + ~FutureTask~ - Class extends ~Runnable~; can be submitted 
+                         to an ~Executor~ directly.
+      + ~ScheduledFuture~
+        + ~ScheduleRunnableFuture~
+
+*** Contrived Example of Future Usage
+    #+BEGIN_SRC scala :results silent
+      import java.util.concurrent._
+
+      val pool = Executors.newSingleThreadExecutor
+
+      val future = pool.submit { () =>
+        Thread.sleep(1000)
+        "important value"
+      }
+
+      // if we didn't happen to know how long it would take:
+      // while(!future.isDone) { Thread.sleep(10) }
+      println(future.get(1500, TimeUnit.MILLISECONDS))
+    #+END_SRC
+
+*** Contrived Example Implementation
+    Methods on ~Future~ interface:
+    * ~cancel~
+    * ~get()~ which blocks
+    * ~get(timeout)~ which blocks
+    * ~isCancelled~
+    * ~isDone~
+
+**** Future state management
+     #+BEGIN_SRC scala :results silent
+       import java.util.concurrent.{ Future => _, _ }
+       import java.util.concurrent.atomic.AtomicReference
+       import scala.util.{ Try, Success, Failure }
+
+       trait FutureState[T] {
+         sealed trait State
+
+         case object Ready extends State
+         case class Running(thread: Thread) extends State
+         case object Cancelled extends State
+         case class Complete(result: Try[T]) extends State
+
+         protected val state = new AtomicReference[State](Ready)
+       }
+     #+END_SRC
+
+**** Runnable Future implementation
+     #+BEGIN_SRC scala :results silent
+       class JavaFuture[T](task: => T)
+           extends RunnableFuture[T] with FutureState[T] {
+         protected val completionLatch = new CountDownLatch(1)
+
+         protected def getCompletion: T = {
+           state.get() match {
+             case Cancelled => throw new CancellationException
+             case Complete(Success(value)) => value
+             case Complete(Failure(cause)) =>
+               throw new ExecutionException(cause)
+             case other =>
+               throw new IllegalStateException("Not completed")
+           }
+         }
+
+         // Future methods
+
+         override def get(): T = {
+           completionLatch.await()
+           getCompletion
+         }
+
+         override def get(timeout: Long, unit: TimeUnit): T = {
+           completionLatch.await(timeout, unit)
+           getCompletion
+         }
+
+         override def cancel(cancelRunning: Boolean): Boolean = {
+           val wasCancelled = {
+             state.compareAndSet(Ready, Cancelled) || {
+               state.get() match {
+                 case running @ Running(thread) if cancelRunning =>
+                   val cancelled =
+                     state.compareAndSet(running, Cancelled)
+                   if(cancelled) {
+                     thread.interrupt() // not a sure thing
+                   }
+                   cancelled
+                 case _ => false
+               }
+             }
+           }
+           if(wasCancelled) {
+             completionLatch.countDown()
+           }
+           wasCancelled
+         }
+
+         override def isCancelled(): Boolean =
+           state.get() == Cancelled
+
+         override def isDone(): Boolean =
+           isCancelled  || state.get().isInstanceOf[Complete]
+
+         // Runnable method
+
+         override def run(): Unit = {
+           val running = Running(Thread.currentThread)
+           if(state.compareAndSet(Ready, running)) {
+             val result = Try(task)
+             if(state.compareAndSet(running, Complete(result))) {
+               completionLatch.countDown()
+             }
+           }
+         }
+       }
+     #+END_SRC
+
+*** Issues with Java Futures
+    + Interfaces are trivially basic and oriented around blocking
+    + No composability whatsoever
+
+    In Java: Instead of messing with Java Futures directly, 
+    use Google's *Guava* library, which includes ~ListenableFuture~ 
+    which is ~Future~ + callbacks.
+
+** Scala Futures
+
+*** Interface
+    In package ~scala.concurrent.Future~, Future[+T]
+    + Callbacks:
+      + Abstract: ~onComplete~
+      + Conrete: (implemented with ~onComplete~)
+        + ~andThen, foreach~
+    + Polling: ~isCompleted, value~ (both abstract)
+    + Transformations:
+      + Abstract:
+        + ~transform, transformWith~
+      + Concrete (implemented from ~transform/transformWith~)
+        + ~collect, failed, fallbackTo, filter, flatMap~
+        + ~flatten, map, mapTo, recover, recoverWith~
+        + ~transform[S](T => S, Ex => Ex): Future[S]~
+        + ~withFilter, zip, zipWith~
+    + Every method but ~value~ takes implicit ~ExecutionContext~
+
+*** Things to Implement
+    + Abstract methods:
+      + ~onComplete[U](Try[T] => U)(ec): Unit~
+      + ~isCompleted: Boolean~
+      + ~value: Option[Try[T]]~
+      + ~transform[S](Try[T] => Try[S])(ec): Future[S]~
+      + ~transformWith[S](Try[T] => Future[S])(ec): Future[S]~
+
+*** Let's Build Our Own
+
+**** Standard Plumbing
+     #+BEGIN_SRC scala :results silent
+       import scala.concurrent._
+       import scala.concurrent.duration.Duration
+       import scala.util._
+       import scala.util.control._
+
+       trait FutureBase[+T] extends Future[T] {
+         def ready(atMost: Duration)
+           (implicit permit: CanAwait): this.type = ???
+         def result(atMost: Duration)
+           (implicit permit: CanAwait): T = ???
+       }
+     #+END_SRC
+
+**** Strict Future
+     #+BEGIN_SRC scala :results silent
+       class StrictFuture[+T](value: T) extends FutureBase[T] {
+         override def isCompleted = true
+         override def value = Some(Success(value))
+
+         override def onComplete[U](fn: Try[T] => U)
+           (implicit ec: ExecutionContext): Unit = {
+           fn(Success(value))
+         }
+
+         override def transform[S](fn: Try[T] => Try[S])
+           (implicit ec: ExecutionContext): Future[S] = {
+           val result = try {
+             fn(Success(value))
+           } catch {
+             case NonFatal(ex) => Failure(ex)
+           }
+           Future.fromTry(result) // cheating
+         }
+
+         override def transformWith[S](fn: Try[T] => Future[S])
+           (implicit ec: ExecutionContext): Future[S] = {
+           try {
+             fn(Success(value))
+           } catch {
+             case NonFatal(ex) => Future.failed(ex) // cheating
+           }
+         }
+       }
+     #+END_SRC
+
+**** Future that is Actually Async
+     This isn't so simple:
+     + ~Future~ has a stateful notion of completion
+     + Combinators (Callbacks and Transformations) need
+       to either be executed if the Future is complete
+     + Combinators need to be scheduled otherwise
+     + _We need the ability to complete futures_
+
+** Scala Promises
+   A Promise is essentially a completable Future
+
+   In ~scala.concurrent~: ~trait Promise[T]~ with methods:
+   + Abstract:
+     + ~future: Future[T]~
+     + ~isCompleted: Boolean~
+     + ~tryComplete(Try[T]): Boolean~
+   + Concrete:
+     + ~complete(Try[T]): self.type~
+     + ~completeWith(Future[T]): self.type~
+     + ~success(T): self.type~
+     + ~trySuccess(T): Boolean~
+     + ~failure(Throwable): self.type~
+     + ~tryFailure(Throwable): Boolean~
+   + Concrete methods implemented with abstract methods
+
+** Building Our Own Promise and Future
+
+*** Dependencies
+    #+BEGIN_SRC scala :results silent
+      import java.util.concurrent.atomic.AtomicReference
+      import scala.concurrent.ExecutionContext
+      import scala.concurrent.ExecutionContext.Implicits.global
+      import scala.concurrent.Future
+      import scala.concurrent.Promise
+      import scala.util.Failure
+      import scala.util.Success
+      import scala.util.Try
+      import scala.util.control.NonFatal
+    #+END_SRC
+
+*** Promise State
+    #+BEGIN_SRC scala :results silent
+      trait PromiseState[T] extends Promise[T] {
+        sealed trait State {
+          def isCompleted: Boolean
+          def value: Option[Try[T]]
+        }
+
+        case class Incomplete(callbacks: List[Callback])
+            extends State {
+          override def isCompleted = false
+          override def value = None
+
+          def add(callback: Callback): Incomplete =
+            Incomplete(callback :: callbacks)
+        }
+
+        case class Complete(result: Try[T]) extends State {
+          override def isCompleted = true
+          override def value = Some(result)
+        }
+
+        class Callback(
+          executor: ExecutionContext,
+          fn: Try[T] => Any
+        ) {
+          def onComplete(result: Try[T]): Unit = {
+            val task: Runnable = { () =>
+              try {
+                fn(result)
+              } catch {
+                // a failure here should not be from a
+                // callback, it would be from incorrect
+                // plumbing in the promise
+                case NonFatal(ex) =>
+                  executor.reportFailure(ex)
+              }
+            }
+            executor.execute(task)
+          }
+        }
+
+        // internal state
+        protected val state =
+          new AtomicReference[State](Incomplete(Nil))
+
+        override def isCompleted: Boolean =
+          state.get().isCompleted
+
+        protected def get(): State = state.get()
+      }
+    #+END_SRC
+
+*** The Promise implementation
+
+   #+BEGIN_SRC scala :results silent
+     class OurPromise[T] extends PromiseState[T] with FutureBase[T] {
+       // Promise methods
+       override def future: Future[T] = this
+
+       override final def tryComplete(result: Try[T]): Boolean = {
+         get() match {
+           case _: Complete => false
+           case incomplete @ Incomplete(callbacks) =>
+             if(state.compareAndSet(incomplete, Complete(result))) {
+               callbacks.foreach(_.onComplete(result))
+               true
+             } else {
+               // retry in case the change was a new listener added
+               tryComplete(result)
+             }
+         }
+       }
+
+       // Future methods
+       override def value: Option[Try[T]] = get().value
+
+       /** Root of the whole implementation */
+       override final def onComplete[U](fn: Try[T] => U)
+         (implicit ec: ExecutionContext): Unit = {
+         val cb = new Callback(ec, fn)
+         get() match {
+           case Complete(result) => cb.onComplete(result)
+           case incomplete: Incomplete =>
+             // if we fail to add the listener, try again, since
+             // this could be caused either by another new listener,
+             // or completion
+             val newIncomplete = incomplete.add(cb)
+             if(!state.compareAndSet(incomplete, newIncomplete)) {
+               onComplete(fn)
+             }
+         }
+       }
+
+       override def transform[S](fn: Try[T] => Try[S])
+         (implicit ec: ExecutionContext): Future[S] = {
+         val promise = new OurPromise[S]
+         onComplete { result =>
+           promise.complete {
+             try {
+               fn(result)
+             } catch {
+               case NonFatal(ex) => Failure(ex)
+             }
+           }
+         }
+         promise.future
+       }
+
+       override def transformWith[S](fn: Try[T] => Future[S])
+         (implicit ec: ExecutionContext): Future[S] = {
+         val promise = new OurPromise[S]
+         onComplete { result =>
+           try {
+             promise.completeWith(fn(result))
+           } catch {
+             case NonFatal(ex) => promise.failure(ex)
+           }
+         }
+         promise.future
+       }
+     }
+   #+END_SRC
+
+*** Utilities similar to the Future/Promise objects
+    #+BEGIN_SRC scala :results silent
+      object OurFuture {
+        def successful[T](value: T): Future[T] =
+          new OurPromise[T]().success(value).future
+
+        def failed[T](exception: Throwable): Future[T] =
+          new OurPromise[T]().failure(exception).future
+
+        def unit: Future[Unit] =
+          OurFuture.successful(())
+
+        def apply[T](thunk: => T)
+          (implicit ec: ExecutionContext): Future[T] = {
+
+          OurFuture.unit.map { _ => thunk }
+        }
+
+        def fromTry[T](thunk: => Try[T])
+          (implicit ec: ExecutionContext): Future[T] = {
+          
+          unit.flatMap { _ =>
+            new OurPromise[T]().complete(thunk).future
+          }
+        }
+      }
+    #+END_SRC
