@@ -1,0 +1,10 @@
+
+* Effective Use of Concurrency
+
++ Compisition
++ Timeouts
++ Cancellation
++ Queueing considerations with threadpool/EC
++ Blocking vs Non-blocking
++ Bulkheading
++ Usage of cores
