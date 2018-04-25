@@ -1,10 +1,46 @@
 
 * Effective Use of Concurrency
 
-+ Compisition
-+ Timeouts
-+ Cancellation
-+ Queueing considerations with threadpool/EC
-+ Blocking vs Non-blocking
-+ Bulkheading
-+ Usage of cores
+** Composition
+
+  Careful composition is a must, careless composition can either hide failures/errors, or waste memory by pushing
+  side-effects that are not tied to the rate of processing. This can eventually lead to exhaustion of heapspace, 
+  either causing misrable garbage collection performance or an OOM crash. These are all bad things.
+
+  _Good example of composition_
+
+  _Bad example of composition_
+
+** Timeouts
+
+  First off, an incomplete Future has no cost, unless it holds callbacks and the reference is held. If a Future in this state is 
+  never completed, this as good as a memory leak. Blindly treating Futures as things that *will* complete is poor form, particularly
+  if you're interating with something that expects a sensible timeout, such as an HTTP request. Futures that never complete, in the
+  context of e.g. a Finagle HTTP server, result in weird behavior such as no response ever being sent to requesters until a TCP 
+  timeout occurs, which is not desirable.
+
+  _Provide an example of doing this properly_
+
+** Cancellation
+
+  A Future represents a (potentially long) chain of 0+ computations. If that chain is determined to be unnecessary, say an HTTP request
+  times out on some initial stage of the computation, it would be nice if the unnecessary downstream processing could be avoided. This
+  might logically be done by "cancelling" a Future. We've covered how this might look in the last talk with implementations of 
+  cancelling in Java and Scala idioms, but the options for cancellation are fairly limited. Java does it poorly and with exceptions.
+  Scala Futures don't bother with any implementation of cancellation/interruption at all. Twitter futures include a whole set of
+  combinators around handling "interruptions". Without support in the abstraction you are using, you may want to implement cancellation 
+  for individual tasks/callbacks in a Future chain, to granularly control this kind of control flow.
+
+  _What does this look like?_
+
+** Queueing considerations with threadpool/EC
+
+  Unless they ignore the semantics of the abstraction, say by using strict evaluation, threadpools and execution contexts *must* rely
+  on a backing queue. This is fine if creation/scheduling of asynchronous tasks is bounded somehow, but unbounded queueing is never
+  a good idea. 
+
+** Blocking vs Non-blocking
+
+** Bulkheading
+
+** Usage of cores
