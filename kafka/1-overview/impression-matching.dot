@@ -1,0 +1,23 @@
+strict digraph "Impression Matching" {
+    label = "Topology for streaming impression matching\n\n";
+    labelloc = "t";
+    rankdir = "LR";
+    splines = ortho;
+    
+    bb [label="Blackbird" shape=circle]
+    a [label="Auctions" shape=box]
+    f [label="Filter:\nGot Bids" shape=diamond]
+    s [label="Successful Auctions" shape=box]
+    i [label="Impressions" shape=box]
+    m [label="Join on\ntransaction_id" shape=diamond]
+    r [label="Matched Impressions" shape=box]
+
+    { rank=same a i }
+
+    bb -> { a i }
+    a -> f
+    f -> s
+    { s i } -> m
+    m -> r
+    
+}

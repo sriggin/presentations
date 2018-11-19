@@ -1,0 +1,30 @@
+strict digraph "Auction POC" {
+    label = "Standard topology for POCs against Auction data";
+    labelloc = "top";
+    rankdir = "LR";
+
+    bb [label="Blackbird"]
+    req [label="Requests",shape=record]
+    auc [label="Auctions",shape=record]
+    poc [label="POC Process",color=blue]
+    poc_res [label="POC Results",shape=record,color=blue]
+    s3_auc [label="S3: Auction Results",shape=record]
+    s3_poc_res [label="S3: POC Results",shape=record,color=blue]
+    
+    subgraph cluster_pod {
+        label = "Pod";
+
+        {rank=same req auc}
+        bb -> {req auc}
+        req -> poc -> poc_res
+    }
+
+    subgraph cluster_aws {
+        label = "AWS";
+
+        {rank=same s3_auc s3_poc_res}
+
+        auc -> s3_auc
+        poc_res -> s3_poc_res
+    }
+}

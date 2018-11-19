@@ -1,0 +1,302 @@
+#+TITLE: Let's Learn about Kafka! Overview
+#+AUTHOR: Sean Riggin
+#+DATE: 2018-11-20
+
+* Overview of Kafka
+
+#+BEGIN_QUOTE
+A streaming platform has three key capabilities:
+
+    Publish and subscribe to streams of records, similar to a message queue or enterprise
+      messaging system.
+    Store streams of records in a fault-tolerant durable way.
+    Process streams of records as they occur.
+
+Kafka is generally used for two broad classes of applications:
+
+    Building real-time streaming data pipelines that reliably get data between systems or
+      applications
+    Building real-time streaming applications that transform or react to the streams of
+      data
+
+-- https://kafka.apache.org/intro
+#+END_QUOTE
+
+* Architecture
+
+Kafka is a distributed messaging system built on the  _append-only log_ datastructure.
+
+Kafka runs as a set of *brokers* which coordinate and maintain cluster state in an
+*Apache Zookeeper* ensemble.
+
+/Kafka can be horizontally scaled by adding more brokers./
+
+* Messages
+
+A message in Kafka consists of a *Key* and *Value*.
+
+They are stored as byte arrays -- their types are *by convention*.
+
+Message values can be compressed using "fast" codecs -- Snappy, LZW, etc.
+
+Messages are stored in a partition with an *offset*, a counter for the message's position
+in the partition
+
+* Topics
+
+Topics are named channels in which messages are produced and consumed.
+
+They are immutable (by you, the client) and append-only.
+
+Consuming messages from a topic _does not change_ the topic.
+
+Topics consist of *partitions* containing a deterministic subset of the keyspace.
+
+[[./images/log_consumer.png]]
+
+* Topics - Partitions
+
+Partitions are _really, really important_ in Kafka
+
++ They actually contain the data, partitioned by key
++ They control parallelism
+  + Partitions are distributed among Kafka brokers, and cannot be subdivided
+  + Consumers consume from a subset of partitions
+    + _You can't have more consumers than partitions_
+
+Because of the above, partitions provide *processing locality*
+  + Kafka manages which consumers see which partitions via subscriptions
+  + A consumer will see the same subset of keys unless its subscriptions change
+
+[[./images/log_anatomy.png]]
+
+* Topics - Partitions Cont'd
+
+By default (*) messages are sent to a partition based on a hash of their key:
+#+NAME: Partitioner
+#+BEGIN_SRC java :classname Partitioner
+  public class DefaultPartitioner extends Partitioner {
+      @Override
+      public int partition(Topic topic, KafkaMessage<byte[], byte[]> message) {
+          return hash(message.getKey()) % topic.partitionCount;
+      }
+  }
+#+END_SRC
+
+This means that, for the same partition count, messages with the same key will go to the
+same topic.
+
+Note that you can change the number of partitions in a topic, and it will completely
+change how keys are mapped to partitions.
+
+If you depend on stable partitioning of keys, don't change partitions in an existing
+topic.
+
+* Topics - Replicas
+
+Replicas ensure durability of data in topics
+Each topic is replicated among a configurable number of replicas, on distinct brokers
+Producing records waits for acknowledgements from some or all replicas
+
+In-Sync Replicas (ISR) are replicas that are fully up to date, and represent health of a
+topic in the Kafka cluster
+
+Generally, you care about 2 things as clients
++ Tradeoff between latency and durability with # of acks
++ Are enough ISRs available? If not, writes won't work
+
+* Topics - Compaction
+
+Compaction is an /interesting/ method for cleaning up data in a topic/log.
+
+With Compaction, only the latest value/offset for each key is definitely retained (*)
+
+A value for each key is retained indefinitely
+A key/value can be "deleted" by producing that key with a *null* value
+The null value represents a "tombstone" and will not remain in the topic indefinitely
+
+_A topic with compaction enabled represents a full dataset, analogous to an unindexed
+database table_
+
+Reading an entire compacted topic enables construction of a "materialized view"
+
+This can be used to populate a database, a local "cache", etc.
+
+[[./images/log_compaction.png]]
+
+* Offsets
+
+An *offset* is just an index of a position in a partition of a topic
+
+_It's a pointer_
+
+In 0.8, consumer offset info was stored in Zookeeper, which isn't great
+
+By 0.10, consumer offset info was stored in a Kafka topic, not Zookeeper
+This enabled various "interesting" things around how to interact with offsets
+In particular, in later versions, timestamps can be looked up with a timestamp
+
+Offsets can also be stored and managed by the consumer application manually
+For example, Spark Streaming stores offset data in HDFS/shared storage
+
+* Producers
+
+Producers are relatively straightforward compared to consumers, with a few tasks:
++ Translate ~KafkaMessage<Key, Value> -> KafkaMessage<byte[], byte[]>~ using configured
+  ~Serializers~
++ Determinine the partition the message will be sent to using the configured ~Partitioner~
++ If configured, batch either N messages or for T milliseconds, whichever is first
++ Wait for the configured number of acknowledgements from ISRs
+
+Producers have synchronous and asynchronous methods for producing messages.
+
+* Consumers
+
+Consumers are much more complicated
+
+A consumer reads from some of the partitions that compose a topic -- simple!
+They have a few basic responsibilities:
++ Get batches of messages from partitions from multiple brokers under the covers
++ Translate ~KafkaMessage<byte[], byte[]> -> KafkaMessage<Key, Value>~ using configured
+  ~Deserializers~
++ Manage committing offsets, automatically or manually (*)
+
+A naive consumer that just cares about streaming data can treat the topic as an iterator:
++ Partitions come and go
++ Messages are ordered within their partition only
++ Getting more messages from brokers is "transparent"
+  + ~next()~ just takes a bit longer sometimes
+
+* Consumers Cont'd
+
+Partition assignment is where consumers get interesting
+
+To support processing locality, consumers are told when they have partitions assigned or
+revoked
+Consumers only receive messages from partitions that are currently assigned
+At a low level, a Consumer is built on a state-machine with Kafka
+
+So when and how do partitions get assigned and revoked?
+
+* Consumer Groups
+
+Consumer Groups allow splitting up processing of partitions in a topic among group members
+
+A consumer group is a single logical consumer of a topic:
++ Has a single offset for each partition in the topic
++ Rebalances partitions when a new consumer joins the group
++ Rebalances partitions when a consumer leaves the group
+
+[[./images/consumer-groups.png]]
+
+Many consumer groups can process on a topic
+Each group has its own offsets
+Only offsets move, partitions are immutable
+Adding more consumer groups is _cheap_ (*)
+
+* Consumer State
+
+From Kafka's perspective, Consumer state is just offsets for a group and a topic
+
+It is "easy" build stateful consumers with:
++ Partition assignment and revocation notifications
++ Stateful guarantees for those notifications
++ Careful management of consumer offsets
+
+Anti-Pattern:
+    For each message:
+        Read value from datastore
+        Do something with value
+        Update datastore
+
+Better Way:
+    For each message:
+        Update local copy of value
+        Do something with value
+        Update datastore
+    On partition revoked, update datastore
+    On partition assigned, read value from datastore
+
+Local value can be in-memory, on-disk, etc.
+
+* Kafka Tools
+
+Kafka's native tools
++ JVM gets first-class support
+  + < 0.9.0 uses a Scala-based client, which is unpleasant
+  + >= 0.9.0 uses a Java client, which is nicer
++ Other languages are supported via ~librdkafka~
+
+* Kafka Connect
+
+*Connect* is a library for moving data between external datastores and Kafka topics, e.g.:
++ Read data from a Postgres table into a topic
++ Write all data from a topic into Aerospike
++ Read all data from an S3 bucket into a topic
+
+It's a lightweight API that defines ~Sources~ and ~Sinks~ with minimally
+Many "connectors" are available to/from many other systems
+
+In addition, Connect defines a way of running connectors in a distributed runtime managed
+by Kafka Connect using Zookeeper to coordinate
+  This seems complicated and scary, operationally
+
+* Kafka Streams
+
+*Streams* is another client library designed to transform data between Kafka topics
++ Supports operations like ~map~, ~filter~, ~aggregate~, ~groupBy~, and ~join~
++ Supports stateful operations with replicated local state (*) to support aggregations
+  like windowed joins
++ Feels surprisingly similar to Java ~Stream~ API
++ Operationally straightforward -- simple Java client runnable in a normal application
++ Constructs processing topology with different logical nodes, single-threaded (*) within
+  application
+
+It's available starting in a later version (0.10.0? still old) so we can't use it yet
+
+* Third-Party Integrations
+
+..Damn near everything, these days.
+
+* Examples
+
+Legend:
++ Rectangles are topics
++ Ovals are processes
++ Diamonds are transformations
+
+* Example - Impression Matching
+
+Transaction data for auctions and impressions currently lives in the same topic, consumed
+by *Loveboat*. It uses some in-process cache to store a sliding window of 2 minutes of
+transactions.
+
+Here's how a topology for doing the same thing with Kafka Streams might look:
+
+[[./impression-matching.png]]
+
+* Example - Auction Datasets
+
+We currently have various ways of getting data to the auction:
++ MySQL with cross-site replication
++ Aerospike with cross-site replication
++ File drops and copies
++ Etc.
+Error handling, robustness, operations are all solved differently (if at all) for each.
+
+Instead, we could use Kafka as a unified vehicle for moving data into the exchange:
+
+[[./local-lookup.png]]
+
+* Example - Auction-scale POC
+
+Today, we use feature toggles to run experiments prior to fully enabling some features
+
+There are certain experiments and proof-of-concepts that this doesn't really work for,
+such as our *WhiteOps* integration.
+
+To generalize the approach we're trying out with this POC:
+
+[[./auction-poc.png]]
+
+* Questions?

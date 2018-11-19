@@ -1,0 +1,38 @@
+digraph "Application-Local Lookups" {
+
+    be_zn [label="Zones"];
+    be_rdr [label="Readers"];
+    be_adv [label="Advisements"];
+    t_zn [label="Zones",shape=record];
+    t_rdr [label="Readers",shape=record];
+    t_adv [label="Advisements",shape=record];
+    bb_zn [label="Zones"];
+    bb_rdr [label="Readers"];
+    bb_adv [label="Advisements"];
+        
+    subgraph cluster_backend {
+        label = "Backend";
+
+        {rank=same be_zn be_rdr be_adv}
+    }
+    
+    subgraph cluster_pod {
+        label = "Pod";
+            
+        subgraph cluster_blackbird {
+            label = "Blackbird   "; //whitespace to separate from arrow
+
+            {rank=same bb_zn bb_rdr bb_adv}
+        }
+
+        {rank=same t_zn t_rdr t_adv}
+    }
+
+    be_zn -> t_zn;
+    be_rdr -> t_rdr;
+    be_adv -> t_adv;
+    
+    t_zn -> bb_zn
+    t_rdr -> bb_rdr
+    t_adv -> bb_adv
+}
