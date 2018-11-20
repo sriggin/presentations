@@ -4,19 +4,18 @@ strict digraph "Auction POC" {
     rankdir = "LR";
 
     bb [label="Blackbird"]
-    req [label="Requests",shape=record]
     auc [label="Auctions",shape=record]
     poc [label="POC Process",color=blue]
     poc_res [label="POC Results",shape=record,color=blue]
     s3_auc [label="S3: Auction Results",shape=record]
     s3_poc_res [label="S3: POC Results",shape=record,color=blue]
-    
+
     subgraph cluster_pod {
         label = "Pod";
 
-        {rank=same req auc}
-        bb -> {req auc}
-        req -> poc -> poc_res
+        {rank=same auc}
+        bb -> auc
+        auc -> poc -> poc_res
     }
 
     subgraph cluster_aws {
